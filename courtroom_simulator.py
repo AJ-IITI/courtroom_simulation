@@ -1,4 +1,5 @@
 import os
+import streamlit as st
 import pandas as pd
 from typing import List, Dict
 from huggingface_hub import InferenceClient
@@ -70,57 +71,132 @@ You are Jamie Lee, a key witness in this case.
 Respond based only on what you've observed or experienced relevant to the case.
 """
 
-# ====== Verdict Extraction ======
+# ====== App UI ======
+st.set_page_config(page_title="Courtroom Simulator", layout="wide")
+st.title("🧑‍⚖️ AI Courtroom Simulation")
+
+# Load cases
+@st.cache_data
+def load_cases():
+    return pd.read_csv("sample_cases.csv")
+
+cases_df = load_cases()
+case_titles = [f"Case {i+1}: {row['text'][:60]}..." for i, row in cases_df.iterrows()]
+
+# Select case
+case_index = st.selectbox("Select a Case to Simulate:", range(len(case_titles)), format_func=lambda i: case_titles[i])
+selected_case = cases_df.iloc[case_index]
+st.markdown(f"**Case Description:** {selected_case['text']}")
+
+# Session state init
+if "phase" not in st.session_state:
+    st.session_state.phase = 0
+    st.session_state.defense = CourtroomAgent("Defense", DEFENSE_SYSTEM)
+    st.session_state.prosecution = CourtroomAgent("Prosecution", PROSECUTION_SYSTEM)
+    st.session_state.judge = CourtroomAgent("Judge", JUDGE_SYSTEM)
+    st.session_state.witness = CourtroomAgent("Witness", WITNESS_SYSTEM)
+    st.session_state.plaintiff = CourtroomAgent("Plaintiff", PLAINTIFF_SYSTEM)
+    st.session_state.defendant = CourtroomAgent("Defendant", DEFENDANT_SYSTEM)
+    st.session_state.transcript = []
+
+# Button controls
+col1, col2 = st.columns([1, 4])
+with col1:
+    if st.button("🔁 Restart Trial"):
+        st.session_state.phase = 0
+        st.session_state.defense = CourtroomAgent("Defense", DEFENSE_SYSTEM)
+        st.session_state.prosecution = CourtroomAgent("Prosecution", PROSECUTION_SYSTEM)
+        st.session_state.judge = CourtroomAgent("Judge", JUDGE_SYSTEM)
+        st.session_state.witness = CourtroomAgent("Witness", WITNESS_SYSTEM)
+        st.session_state.plaintiff = CourtroomAgent("Plaintiff", PLAINTIFF_SYSTEM)
+        st.session_state.defendant = CourtroomAgent("Defendant", DEFENDANT_SYSTEM)
+        st.session_state.transcript = []
+
+with col2:
+    if st.button("▶️ Next Phase"):
+        st.session_state.phase += 1
+
+# === Trial Phases ===
+case_desc = selected_case['text']
+
+if st.session_state.phase == 1:
+    msg = st.session_state.prosecution.respond(f"Opening statement. Background: {case_desc}")
+    st.session_state.transcript.append(("Prosecution", msg))
+    msg = st.session_state.defense.respond("Opening statement in response.")
+    st.session_state.transcript.append(("Defense", msg))
+
+elif st.session_state.phase == 2:
+    msg = st.session_state.prosecution.respond("Present arguments and question a witness.")
+    st.session_state.transcript.append(("Prosecution", msg))
+    msg = st.session_state.defense.respond("Respond to prosecution and question the same witness.")
+    st.session_state.transcript.append(("Defense", msg))
+
+elif st.session_state.phase == 3:
+    msg = st.session_state.witness.respond("Please provide your testimony based on the events of the case.")
+    st.session_state.transcript.append(("Witness", msg))
+
+elif st.session_state.phase == 4:
+    msg = st.session_state.plaintiff.respond("Present your statement to the court.")
+    st.session_state.transcript.append(("Plaintiff", msg))
+    msg = st.session_state.defendant.respond("Present your defense to the court.")
+    st.session_state.transcript.append(("Defendant", msg))
+
+elif st.session_state.phase == 5:
+    msg = st.session_state.prosecution.respond("Give your closing statement.")
+    st.session_state.transcript.append(("Prosecution", msg))
+    msg = st.session_state.defense.respond("Give your closing statement.")
+    st.session_state.transcript.append(("Defense", msg))
+
+elif st.session_state.phase == 6:
+    msg = st.session_state.judge.respond("Deliver the final verdict.")
+    st.session_state.transcript.append(("Judge", msg))
+
+# === Verdict Extraction (Grant/Denied) Based on Keywords ===
 def extract_verdict(judge_text: str) -> int:
     judge_text = judge_text.lower()
+
     grant_keywords = [
-        "in favor of plaintiff", "plaintiff wins", "granted", "rules for plaintiff",
-        "rules in favor of plaintiff", "court supports the plaintiff"
+        "in favor of plaintiff",
+        "plaintiff wins",
+        "granted",
+        "rules for plaintiff",
+        "rules in favor of plaintiff",
+        "court supports the plaintiff"
     ]
     deny_keywords = [
-        "in favor of defendant", "denied", "rules for defendant",
-        "rules in favor of defendant", "plaintiff loses", "court rejects the plaintiff's claim"
+        "in favor of defendant",
+        "denied",
+        "rules for defendant",
+        "rules in favor of defendant",
+        "plaintiff loses",
+        "court rejects the plaintiff's claim"
     ]
+
     for keyword in grant_keywords:
         if keyword in judge_text:
             return 1
     for keyword in deny_keywords:
         if keyword in judge_text:
             return 0
-    
+
+    # Optional fallback
+    if "plaintiff" in judge_text and "win" in judge_text:
+        return 1
+    if "defendant" in judge_text and "win" in judge_text:
+        return 0
+
     return 0
 
-# ====== Main Simulation Function ======
-def simulate_trial(case_text: str) -> int:
-    defense = CourtroomAgent("Defense", DEFENSE_SYSTEM)
-    prosecution = CourtroomAgent("Prosecution", PROSECUTION_SYSTEM)
-    judge = CourtroomAgent("Judge", JUDGE_SYSTEM)
-    witness = CourtroomAgent("Witness", WITNESS_SYSTEM)
-    plaintiff = CourtroomAgent("Plaintiff", PLAINTIFF_SYSTEM)
-    defendant = CourtroomAgent("Defendant", DEFENDANT_SYSTEM)
+# === Extract and Show Verdict (Only when Judge has spoken) ===
+if st.session_state.phase >= 6 and len(st.session_state.transcript) > 0:
+    last_speaker, judge_text = st.session_state.transcript[-1]
+    if last_speaker == "Judge":
+        verdict = extract_verdict(judge_text)
+        st.session_state.verdict = verdict
+        st.markdown(f"**Verdict:** {'GRANTED' if verdict == 1 else 'DENIED'}")
 
-    prosecution.respond(f"Opening statement. Background: {case_text}")
-    defense.respond("Opening statement in response.")
-    prosecution.respond("Present arguments and question a witness.")
-    defense.respond("Respond to prosecution and question the same witness.")
-    witness.respond("Please provide your testimony based on the events of the case.")
-    plaintiff.respond("Present your statement to the court.")
-    defendant.respond("Present your defense to the court.")
-    prosecution.respond("Give your closing statement.")
-    defense.respond("Give your closing statement.")
-    judge_text = judge.respond("Deliver the final verdict.")
-
-    return extract_verdict(judge_text)
-
-if __name__ == "__main__":
-    input_df = pd.read_csv("sample_cases.csv")
-    results = []
-    for _, row in input_df.iterrows():
-        case_id = row["id"]
-        case_text = row["text"]
-        verdict = simulate_trial(case_text)
-        results.append({"id": case_id, "label": verdict})
-
-    output_df = pd.DataFrame(results)
-    output_df.to_csv("submission.csv", index=False)
-    print("Submission file 'submission.csv' has been created.")
+# === Show Transcript ===
+st.divider()
+st.subheader("📜 Trial Transcript")
+for speaker, text in st.session_state.transcript:
+    st.markdown(f"**{speaker}**: {text}")
